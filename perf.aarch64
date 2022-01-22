@@ -1,0 +1,4 @@
+cycles
+armv8_cortex_a72/mem_access/
+dTLB-load-misses
+dTLB-store-misses
