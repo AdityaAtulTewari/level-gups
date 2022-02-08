@@ -1,3 +1,6 @@
 /target
 gups-*
 Cargo.lock
+data
+lib
+*.png

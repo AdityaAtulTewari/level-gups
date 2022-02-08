@@ -2,8 +2,16 @@
 name = "gups"
 version = "0.1.0"
 edition = "2021"
-
+build = "build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+broadwell = []
+m5 = []
+
+[build-dependencies]
+cc = { version = "1.0", features = ["parallel"] }
+build_cfg = "1.1.0"
 
 [dependencies]
 clap = { version = "3.0.8", features = ["derive"] }
