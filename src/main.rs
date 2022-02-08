@@ -43,11 +43,11 @@ mod perf
     fn m5_exit(ns_delay : u64) -> ();
     fn m5_reset_stats(ns_delay : u64, ns_period : u64) -> ();
   }
-  pub fn create_counters () -> PassAround {PassAround {}}
-  pub fn reset_counters (_pa0 : PassAround) -> () {}
-  pub fn start_counters (_pa0 : PassAround) -> () {m5_reset_stats(0,0);}
-  pub fn stop_counters (_pa0 : PassAround) -> () {m5_exit(0);}
-  pub fn print_counters (_pa0 : PassAround) -> () {}
+  pub unsafe fn create_counters () -> PassAround {PassAround {}}
+  pub unsafe fn reset_counters (_pa0 : PassAround) -> () {}
+  pub unsafe fn start_counters (_pa0 : PassAround) -> () {m5_reset_stats(0,0);}
+  pub unsafe fn stop_counters (_pa0 : PassAround) -> () {m5_exit(0);}
+  pub unsafe fn print_counters (_pa0 : PassAround) -> () {}
 }
 
 #[cfg(not(any(feature = "m5", feature = "broadwell")))]
