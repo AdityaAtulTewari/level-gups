@@ -14,6 +14,7 @@ fn main()
   }
   else if build_cfg!(feature = "m5")
   {
-    println!("cargo:rustc-link-search=/usr/lib")
+    println!("cargo:rustc-link-search=/usr/lib");
+    println!("cargo:rustc-link-lib=m5");
   }
 }
