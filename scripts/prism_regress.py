@@ -12,6 +12,7 @@ import scipy.stats
 parser = argparse.ArgumentParser()
 parser.add_argument('-o', action='store', dest="ouputf", help="Ouput FileN", default="")
 parser.add_argument('-i', action='store', dest="inputf", help="Input FileN", default="")
+parser.add_argument('-r', action='store_true', dest="origin", help="Orign PRISM", default=False)
 
 def parse_input(inputf):
   A=[]
@@ -32,6 +33,10 @@ def regression(matrix, vector):
     print("Failed to converge yadumb biatch", file=sys.stderr)
     sys.exit(-1)
 
+  print(np.var(res["fun"]))
+  print(np.var(vector))
+  if(np.var(vector) == 0):
+    return res["x"], 0
   unexplained_var = np.var(res["fun"])/np.var(vector)
   return res["x"], unexplained_var
 
@@ -55,10 +60,9 @@ if __name__ == "__main__":
   if args.ouputf != "" or args.ouputf is None:
     ouputf = open(args.ouputf)
   reg_matrix, reg_vector = parse_input(inputf)
-  res_matrix = reshape(reg_matrix)
-  res, res_v = regression(res_matrix, reg_vector)
+  res, res_v = regression(reg_matrix, reg_vector) if args.origin else regression(reshape(reg_matrix), reg_vector)
   outputNames = ["L1", "L2", "L3", "LM"]
   tot = 0
   for name, val in zip(outputNames, res):
-    tot += val
+    tot = val if args.origin else tot + val
     print(name + "\t" + str(tot) + "\t" + str(res_v), file=ouputf)
