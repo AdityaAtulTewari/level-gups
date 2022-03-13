@@ -17,3 +17,5 @@ build_cfg = "1.1.0"
 clap = { version = "3.0.8", features = ["derive"] }
 libc = "0.2"
 errno = "0.2.8"
+crossbeam = "0.8.1"
+core_affinity = "0.5.10"

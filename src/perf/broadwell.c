@@ -33,6 +33,7 @@ pa create_counters()
   pea.size = size;
   pea.config = PERF_COUNT_HW_CPU_CYCLES;
   pea.disabled = 1;
+  pea.inherit = 1;
   pea.exclude_kernel = 0;
   pea.exclude_hv = 1;
   pea.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
@@ -40,13 +41,14 @@ pa create_counters()
   if(fd0 < 0) exit(-1);
   int fd = ioctl(fd0, PERF_EVENT_IOC_ID, &ids[0]);
   if(fd  < 0) exit(-2);
-  for(int i = 0; i < sizeof(fix_counters)/sizeof(fix_counters[0]); i++)
+  for(uint32_t i = 0; i < sizeof(fix_counters)/sizeof(fix_counters[0]); i++)
   {
     memset(&pea, 0, size);
     pea.type = PERF_TYPE_HARDWARE;
     pea.size = size;
     pea.config = fix_counters[i];
     pea.disabled = 1;
+    pea.inherit = 1;
     pea.exclude_kernel = 0;
     pea.exclude_hv = 1;
     pea.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
@@ -55,13 +57,14 @@ pa create_counters()
     fd = ioctl(fd, PERF_EVENT_IOC_ID, &ids[i + 1]);
     if(fd < 0) exit(-2);
   }
-  for(int i = 0; i < sizeof(raw_counters)/sizeof(raw_counters[0]); i++)
+  for(uint32_t i = 0; i < sizeof(raw_counters)/sizeof(raw_counters[0]); i++)
   {
     memset(&pea, 0, size);
     pea.type = PERF_TYPE_RAW;
     pea.size = size;
     pea.config = raw_counters[i];
     pea.disabled = 1;
+    pea.inherit = 1;
     pea.exclude_kernel = 0;
     pea.exclude_hv = 1;
     pea.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_ID;
@@ -97,9 +100,9 @@ void print_counters(pa pa0)
   rf* rf0 = (rf*) buf;
   int i = read(pa0.fd0, buf, sizeof(buf));
   if (i < 0) exit(-3);
-  for(int i = 0; i < rf0->nr; i++)
+  for(uint32_t i = 0; i < rf0->nr; i++)
   {
-    for(int j = 0; j < sizeof(raw_counters)/sizeof(raw_counters[0]) + 1 + sizeof(fix_counters); j++)
+    for(uint32_t j = 0; j < sizeof(raw_counters)/sizeof(raw_counters[0]) + 1 + sizeof(fix_counters); j++)
     {
       if(rf0->values[i].id == pa0.ids[j])
       {
@@ -108,6 +111,6 @@ void print_counters(pa pa0)
       }
     }
   }
-  for(int i = 0; i < rf0->nr; i++)
+  for(uint32_t i = 0; i < rf0->nr; i++)
     printf("%" PRIu64 "\t%s\n", vals[i], raw_strings[i]);
 }

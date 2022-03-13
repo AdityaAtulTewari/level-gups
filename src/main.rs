@@ -5,7 +5,8 @@ use libc;
 use errno::errno;
 use std::slice;
 use std::ops::{BitXorAssign,Shl,Shr};
-
+use crossbeam::thread;
+use crossbeam::atomic::AtomicCell;
 
 #[cfg(all(feature = "broadwell", feature = "m5"))]
 compile_error!("Feature broadwell and m5 should not be enabled at the same time.");
@@ -21,6 +22,7 @@ mod perf
     pub fd0 : i64,
     pub ids : *mut u64,
   }
+  pub fn create_empty() -> PassAround {PassAround{fd0 : -1, ids : std::ptr::null_mut()}}
   extern "C"
   {
     pub fn create_counters () -> PassAround;
@@ -43,6 +45,7 @@ mod perf
     fn m5_exit(ns_delay : u64) -> ();
     fn m5_reset_stats(ns_delay : u64, ns_period : u64) -> ();
   }
+  pub fn create_empty() -> PassAround {create_counters()}
   pub unsafe fn create_counters () -> PassAround {PassAround {}}
   pub unsafe fn reset_counters (_pa0 : PassAround) -> () {}
   pub unsafe fn start_counters (_pa0 : PassAround) -> () {m5_reset_stats(0,0);}
@@ -56,6 +59,7 @@ mod perf
   #[repr(C)]
   #[derive(Copy,Clone)]
   pub struct PassAround {}
+  pub fn create_empty() -> PassAround {create_counters()}
   pub fn create_counters () -> PassAround {PassAround{}}
   pub fn reset_counters (_pa0 : PassAround) -> () {}
   pub fn start_counters (_pa0 : PassAround) -> () {}
@@ -63,8 +67,7 @@ mod perf
   pub fn print_counters (_pa0 : PassAround) -> () {}
 }
 
-use perf::{PassAround,create_counters,reset_counters,start_counters,stop_counters,print_counters};
-
+use perf::{PassAround,create_empty,create_counters,reset_counters,start_counters,stop_counters,print_counters};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -124,7 +127,8 @@ impl<T : Shl<u8, Output=T> + Shr<u8, Output=T> + BitXorAssign + Copy> Prand<T>
 
 fn random_placem(buf : &mut [usize], ind_value : usize, num : usize) -> ()
 {
-  let mut rng = Prand::<usize>{ x : 1, y : 4, z : 7, w : 13};
+  let pid = unsafe{libc::getpid()};
+  let mut rng = Prand::<usize>{ x : 1, y : 4, z : 7, w : pid as usize};
   let c_ind_value = ind_value/mem::size_of::<usize>();
   for i in 0..num
   {
@@ -135,12 +139,17 @@ fn random_placem(buf : &mut [usize], ind_value : usize, num : usize) -> ()
   }
 }
 
-fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64, single_walk : bool, nmsr_stats : bool) -> ()
+fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64, single_walk : bool, nmsr_stats : bool,
+  start : &AtomicCell<u16>, stops : &AtomicCell<u16>, starby : &AtomicCell<bool>, stopby : &AtomicCell<bool>, marshall : bool) -> ()
 {
-  let mut rng = Prand::<usize>{ x : 1, y : 4, z : 7, w : 13};
+  let pid = unsafe{libc::getpid()};
+  let mut rng = Prand::<usize>{ x : 1, y : 4, z : 7, w : pid as usize};
   let c_ind_value = ind_value/mem::size_of::<usize>();
   let mask = num - 1;
-  let pa : PassAround = unsafe {create_counters()};
+  let mut pa : PassAround = create_empty();
+  if marshall{
+    pa = unsafe {create_counters()};
+  }
   let start_measure = if nmsr_stats {|_pa : PassAround| {}} else {|pa : PassAround| {unsafe{reset_counters(pa); start_counters(pa);}}};
   let stop_print_me = if nmsr_stats {|_pa : PassAround| {}} else {|pa : PassAround| {unsafe{stop_counters(pa); print_counters(pa);}}};
   let benchmark = if !single_walk
@@ -151,13 +160,34 @@ fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64
   }
   else {|buf : &mut[usize], i : usize, c_ind_value : usize, rng : &mut Prand<usize>| -> () {buf[i * c_ind_value] ^= rng.simplerand()}};
 
-  start_measure(pa);
+  start.fetch_sub(1);
+  while start.load() != 0 {}
+  if marshall
+  {
+    start_measure(pa);
+    starby.store(false);
+  }
+  else
+  {
+    while starby.load() {}
+  }
+
   for _ in 0..times
   {
     let i : usize = rng.simplerand() & mask;
     benchmark(buf, i, c_ind_value, &mut rng);
   }
-  stop_print_me(pa);
+  stops.fetch_sub(1);
+  while stops.load() != 0 {}
+  if marshall
+  {
+    stop_print_me(pa);
+    stopby.store(false);
+  }
+  else
+  {
+    while stopby.load() {}
+  }
 }
 
 unsafe fn alloc_aligned<T>(layout : Layout) -> Result<&'static mut [T], String>
@@ -193,9 +223,7 @@ fn main()
     unsafe
     {
       res = libc::prctl(libc::PR_SET_THP_DISABLE, val,nval,nval,nval);
-    }
-    if res != 0
-    {
+    } if res != 0 {
       let e = errno();
       println!("res was {}", res);
       println!("prctl had Error {}: {}", e.0, e);
@@ -223,19 +251,54 @@ fn main()
     Err(e) => {println!("We tried a layout with sz_to_alloc {} and ind_value {} to get the Error: {}", sz_to_alloc, ind_value, e); panic!("Align setup failed");}
   }
 
-  let mmap : Result<&'static mut [usize], String>;
-  unsafe
-  {
-    mmap = alloc_aligned(layout);
-  }
+  let core_ids = core_affinity::get_core_ids().unwrap();
+  if core_ids.len() < args.n_threads.into() {panic!("You have asked for too many threads");}
 
-  match mmap
+  let start : &AtomicCell<u16> = &AtomicCell::<u16>::new(args.n_threads as u16);
+  let stops : &AtomicCell<u16> = &AtomicCell::<u16>::new(args.n_threads as u16);
+  let starby: &AtomicCell<bool> = &AtomicCell::<bool>::new(true);
+  let stopby: &AtomicCell<bool> = &AtomicCell::<bool>::new(true);
+  thread::scope(|s|
   {
-    Ok(buf) =>
+    for i in 1..args.n_threads
     {
-      random_placem(buf, ind_value, args.choices_n);
-      run_benchmark(buf, ind_value, args.choices_n, args.n_updates, args.access_sin, args.nmsr_stats);
+      let core = core_ids[i as usize];
+      s.spawn(move |_|
+      {
+        core_affinity::set_for_current(core);
+        let mmap : Result<&'static mut [usize], String>;
+        unsafe
+        {
+          mmap = alloc_aligned(layout);
+        }
+
+        match mmap
+        {
+          Ok(buf) =>
+          {
+            random_placem(buf, ind_value, args.choices_n);
+            run_benchmark(buf, ind_value, args.choices_n, args.n_updates, args.access_sin, args.nmsr_stats, &start, &stops, &starby, &stopby, false);
+          }
+          Err(e) => {println!("We tried to allocate {} and got Error: {}", sz_to_alloc, e); panic!("Setup failed");}
+        }
+      });
     }
-    Err(e) => {println!("We tried to allocate {} and got Error: {}", sz_to_alloc, e); panic!("Setup failed");}
-  }
+    let core = core_ids[0];
+    core_affinity::set_for_current(core);
+    let mmap : Result<&'static mut [usize], String>;
+    unsafe
+    {
+      mmap = alloc_aligned(layout);
+    }
+
+    match mmap
+    {
+      Ok(buf) =>
+      {
+        random_placem(buf, ind_value, args.choices_n);
+        run_benchmark(buf, ind_value, args.choices_n, args.n_updates, args.access_sin, args.nmsr_stats, &start, &stops, &starby, &stopby, true);
+      }
+      Err(e) => {println!("We tried to allocate {} and got Error: {}", sz_to_alloc, e); panic!("Setup failed");}
+    }
+  }).unwrap();
 }
