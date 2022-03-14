@@ -45,7 +45,7 @@ mod perf
     fn m5_exit(ns_delay : u64) -> ();
     fn m5_reset_stats(ns_delay : u64, ns_period : u64) -> ();
   }
-  pub fn create_empty() -> PassAround {create_counters()}
+  pub unsafe fn create_empty() -> PassAround {create_counters()}
   pub unsafe fn create_counters () -> PassAround {PassAround {}}
   pub unsafe fn reset_counters (_pa0 : PassAround) -> () {}
   pub unsafe fn start_counters (_pa0 : PassAround) -> () {m5_reset_stats(0,0);}
@@ -146,7 +146,7 @@ fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64
   let mut rng = Prand::<usize>{ x : 1, y : 4, z : 7, w : pid as usize};
   let c_ind_value = ind_value/mem::size_of::<usize>();
   let mask = num - 1;
-  let mut pa : PassAround = create_empty();
+  let mut pa : PassAround = unsafe {create_empty()};
   if marshall{
     pa = unsafe {create_counters()};
   }
