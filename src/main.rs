@@ -77,9 +77,17 @@ struct Args
     #[clap(short, long, default_value_t = 0)]
     tgt_level : u8,
 
-    /// Number of threads to use
-    #[clap(long, default_value_t = 1)]
-    n_threads : u8,
+    /// Number of threads to stress virtual memory
+    #[clap(short, long, default_value_t = 1)]
+    v_threads : u8,
+
+    /// Number of threads to stress the cache memory
+    #[clap(long, default_value_t = 0)]
+    c_threads : u8,
+
+    /// Cache memory size to stress in kB
+    #[clap(long, default_value_t = 4)]
+    mem_cache : usize,
 
     /// Number of updates
     #[clap(short, long, default_value_t = 1000000000)]
@@ -125,6 +133,32 @@ impl<T : Shl<u8, Output=T> + Shr<u8, Output=T> + BitXorAssign + Copy> Prand<T>
   }
 }
 
+struct StartStop
+{
+  v_start : AtomicCell<u16>,
+  v_stops : AtomicCell<u16>,
+  c_start : AtomicCell<u16>,
+  c_stops : AtomicCell<u16>,
+  startby : AtomicCell<bool>,
+  stopsby : AtomicCell<bool>
+}
+
+impl StartStop
+{
+  fn new(v_num : u16, c_num : u16) -> StartStop
+  {
+    StartStop{
+    v_start : AtomicCell::<u16>::new(v_num),
+    v_stops : AtomicCell::<u16>::new(v_num),
+    c_start : AtomicCell::<u16>::new(c_num),
+    c_stops : AtomicCell::<u16>::new(c_num),
+    startby : AtomicCell::<bool>::new(true),
+    stopsby : AtomicCell::<bool>::new(true)
+    }
+  }
+}
+
+
 fn random_placem(buf : &mut [usize], ind_value : usize, num : usize) -> ()
 {
   let pid = unsafe{libc::getpid()};
@@ -140,7 +174,7 @@ fn random_placem(buf : &mut [usize], ind_value : usize, num : usize) -> ()
 }
 
 fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64, single_walk : bool, nmsr_stats : bool,
-  start : &AtomicCell<u16>, stops : &AtomicCell<u16>, starby : &AtomicCell<bool>, stopby : &AtomicCell<bool>, marshall : bool) -> ()
+  start_stop : &StartStop, marshall : bool) -> ()
 {
   let pid = unsafe{libc::getpid()};
   let mut rng = Prand::<usize>{ x : 1, y : 4, z : 7, w : pid as usize};
@@ -160,16 +194,17 @@ fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64
   }
   else {|buf : &mut[usize], i : usize, c_ind_value : usize, rng : &mut Prand<usize>| -> () {buf[i * c_ind_value] ^= rng.simplerand()}};
 
-  start.fetch_sub(1);
-  while start.load() != 0 {}
+  start_stop.v_start.fetch_sub(1);
+  while start_stop.v_start.load() != 0 {}
   if marshall
   {
+    while start_stop.c_start.load() != 0 {}
     start_measure(pa);
-    starby.store(false);
+    start_stop.startby.store(false);
   }
   else
   {
-    while starby.load() {}
+    while start_stop.startby.load() {}
   }
 
   for _ in 0..times
@@ -177,16 +212,66 @@ fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64
     let i : usize = rng.simplerand() & mask;
     benchmark(buf, i, c_ind_value, &mut rng);
   }
-  stops.fetch_sub(1);
-  while stops.load() != 0 {}
+  start_stop.v_stops.fetch_sub(1);
+  while start_stop.v_stops.load() != 0 {}
   if marshall
   {
+    while start_stop.c_stops.load() != 0 {}
     stop_print_me(pa);
-    stopby.store(false);
+    start_stop.stopsby.store(false);
   }
   else
   {
-    while stopby.load() {}
+    while start_stop.stopsby.load() {}
+  }
+}
+
+fn c_thread_setup_run(core : core_affinity::CoreId, args : &Args, start_stop : &StartStop) -> ()
+{
+  core_affinity::set_for_current(core);
+  let buff_len : usize = args.mem_cache*1024 /mem::size_of::<usize>();
+  let mut buff : Vec::<usize> = vec![0; buff_len];
+  let pid = unsafe{libc::getpid()};
+  let mut rng = Prand::<usize>{ x : 1, y : 4, z : 7, w : pid as usize};
+  for i in 0..buff_len
+  {
+    buff[i] ^= rng.simplerand();
+  }
+  start_stop.c_start.fetch_sub(1);
+  while start_stop.startby.load() {}
+  let mut i : usize = 0;
+  let mut mask : usize;
+  while start_stop.v_stops.load() != 0
+  {
+    mask = rng.simplerand();
+    for _ in 0.. 1024/mem::size_of::<usize>()
+    {
+      buff[i] ^= mask;
+      i = (i + 1) % buff_len;
+    }
+  }
+  start_stop.c_stops.fetch_sub(1);
+  while start_stop.stopsby.load() {}
+}
+
+fn v_thread_setup_run(core : core_affinity::CoreId, layout : Layout, args : &Args, ind_value : usize,
+  start_stop : &StartStop, marshall : bool)
+{
+  core_affinity::set_for_current(core);
+  let mmap : Result<&'static mut [usize], String>;
+  unsafe
+  {
+    mmap = alloc_aligned(layout);
+  }
+
+  match mmap
+  {
+    Ok(buf) =>
+    {
+      random_placem(buf, ind_value, args.choices_n);
+      run_benchmark(buf, ind_value, args.choices_n, args.n_updates, args.access_sin, args.nmsr_stats, start_stop, marshall);
+    }
+    Err(e) => {println!("We tried to allocate {} and got Error: {}", layout.size(), e); panic!("Setup failed");}
   }
 }
 
@@ -206,15 +291,8 @@ fn main()
 {
   let args = Args::parse();
 
-  if args.choices_n == 0
-  {
-    panic!("There are zero choices");
-  }
-  if (args.choices_n & (args.choices_n - 1)) != 0
-  {
-    panic!("The choices_n is not a power of 2");
-  }
-
+  if args.choices_n == 0 {panic!("There are zero choices");}
+  if (args.choices_n & (args.choices_n - 1)) != 0 {panic!("The choices_n is not a power of 2");}
   if !args.disabl_thp
   {
     let res : libc::c_int;
@@ -232,14 +310,15 @@ fn main()
     }
   }
 
+  let core_ids = core_affinity::get_core_ids().unwrap();
+  if args.v_threads < 1 { panic!("You must ask for at least one v_thread");}
+  if core_ids.len() < args.v_threads as usize + args.c_threads as usize {panic!("You have asked for too many threads");}
 
   // We will make an assumption based upon the size of a pointer how many levels this has (2 or 4)
   let pg_sz : u8 = if mem::size_of::<*const usize>() == 8 { 4 } else { 2 };
 
-  if args.tgt_level >= pg_sz
-  {
-    panic!("The target level you have selected is out of bounds.");
-  }
+  if args.tgt_level >= pg_sz { panic!("The target level you have selected is out of bounds.");}
+
   let num = args.choices_n; // - 1;
   let ind_value = 4096 * (if pg_sz == 2 {usize::pow(1024, args.tgt_level as u32)} else {usize::pow(1 << 9, args.tgt_level as u32)});
   let sz_to_alloc = num * ind_value; //+ 8;
@@ -251,54 +330,25 @@ fn main()
     Err(e) => {println!("We tried a layout with sz_to_alloc {} and ind_value {} to get the Error: {}", sz_to_alloc, ind_value, e); panic!("Align setup failed");}
   }
 
-  let core_ids = core_affinity::get_core_ids().unwrap();
-  if core_ids.len() < args.n_threads.into() {panic!("You have asked for too many threads");}
-
-  let start : &AtomicCell<u16> = &AtomicCell::<u16>::new(args.n_threads as u16);
-  let stops : &AtomicCell<u16> = &AtomicCell::<u16>::new(args.n_threads as u16);
-  let starby: &AtomicCell<bool> = &AtomicCell::<bool>::new(true);
-  let stopby: &AtomicCell<bool> = &AtomicCell::<bool>::new(true);
+  let start_stop : &StartStop = &StartStop::new(args.v_threads as u16, args.c_threads as u16);
   thread::scope(|s|
   {
-    for i in 1..args.n_threads
+    let args = &args;
+    for i in 1..args.v_threads
     {
       let core = core_ids[i as usize];
       s.spawn(move |_|
       {
-        core_affinity::set_for_current(core);
-        let mmap : Result<&'static mut [usize], String>;
-        unsafe
-        {
-          mmap = alloc_aligned(layout);
-        }
-
-        match mmap
-        {
-          Ok(buf) =>
-          {
-            random_placem(buf, ind_value, args.choices_n);
-            run_benchmark(buf, ind_value, args.choices_n, args.n_updates, args.access_sin, args.nmsr_stats, &start, &stops, &starby, &stopby, false);
-          }
-          Err(e) => {println!("We tried to allocate {} and got Error: {}", sz_to_alloc, e); panic!("Setup failed");}
-        }
+        v_thread_setup_run(core, layout, args, ind_value, start_stop, false);
       });
     }
-    let core = core_ids[0];
-    core_affinity::set_for_current(core);
-    let mmap : Result<&'static mut [usize], String>;
-    unsafe
+    for i in 0..args.c_threads
     {
-      mmap = alloc_aligned(layout);
+      let core = core_ids[(i + args.v_threads) as usize];
+      s.spawn(move |_| {
+        c_thread_setup_run(core, args,start_stop)
+      });
     }
-
-    match mmap
-    {
-      Ok(buf) =>
-      {
-        random_placem(buf, ind_value, args.choices_n);
-        run_benchmark(buf, ind_value, args.choices_n, args.n_updates, args.access_sin, args.nmsr_stats, &start, &stops, &starby, &stopby, true);
-      }
-      Err(e) => {println!("We tried to allocate {} and got Error: {}", sz_to_alloc, e); panic!("Setup failed");}
-    }
+    v_thread_setup_run(core_ids[0], layout, args, ind_value, start_stop, true);
   }).unwrap();
 }
