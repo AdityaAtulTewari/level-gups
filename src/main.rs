@@ -6,7 +6,7 @@ use errno::errno;
 use std::slice;
 use std::ops::{BitXorAssign,Shl,Shr};
 use crossbeam::thread;
-use crossbeam::atomic::AtomicCell;
+use core::sync::atomic::{AtomicBool,AtomicUsize,Ordering::Relaxed};
 
 #[cfg(all(feature = "broadwell", feature = "m5"))]
 compile_error!("Feature broadwell and m5 should not be enabled at the same time.");
@@ -135,12 +135,12 @@ impl<T : Shl<u8, Output=T> + Shr<u8, Output=T> + BitXorAssign + Copy> Prand<T>
 
 struct StartStop
 {
-  v_start : AtomicCell<u16>,
-  v_stops : AtomicCell<u16>,
-  c_start : AtomicCell<u16>,
-  c_stops : AtomicCell<u16>,
-  startby : AtomicCell<bool>,
-  stopsby : AtomicCell<bool>
+  v_start : AtomicUsize,
+  v_stops : AtomicUsize,
+  c_start : AtomicUsize,
+  c_stops : AtomicUsize,
+  startby : AtomicBool,
+  stopsby : AtomicBool
 }
 
 impl StartStop
@@ -148,12 +148,12 @@ impl StartStop
   fn new(v_num : u16, c_num : u16) -> StartStop
   {
     StartStop{
-    v_start : AtomicCell::<u16>::new(v_num),
-    v_stops : AtomicCell::<u16>::new(v_num),
-    c_start : AtomicCell::<u16>::new(c_num),
-    c_stops : AtomicCell::<u16>::new(c_num),
-    startby : AtomicCell::<bool>::new(true),
-    stopsby : AtomicCell::<bool>::new(true)
+    v_start : AtomicUsize::new(v_num as usize),
+    v_stops : AtomicUsize::new(v_num as usize),
+    c_start : AtomicUsize::new(c_num as usize),
+    c_stops : AtomicUsize::new(c_num as usize),
+    startby : AtomicBool::new(true),
+    stopsby : AtomicBool::new(true)
     }
   }
 }
@@ -194,17 +194,17 @@ fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64
   }
   else {|buf : &mut[usize], i : usize, c_ind_value : usize, rng : &mut Prand<usize>| -> () {buf[i * c_ind_value] ^= rng.simplerand()}};
 
-  start_stop.v_start.fetch_sub(1);
-  while start_stop.v_start.load() != 0 {}
+  start_stop.v_start.fetch_sub(1, Relaxed);
+  while start_stop.v_start.load(Relaxed) != 0 {}
   if marshall
   {
-    while start_stop.c_start.load() != 0 {}
+    while start_stop.c_start.load(Relaxed) != 0 {}
     start_measure(pa);
-    start_stop.startby.store(false);
+    start_stop.startby.store(false, Relaxed);
   }
   else
   {
-    while start_stop.startby.load() {}
+    while start_stop.startby.load(Relaxed) {}
   }
 
   for _ in 0..times
@@ -212,17 +212,17 @@ fn run_benchmark(buf : &mut [usize], ind_value : usize, num : usize, times : u64
     let i : usize = rng.simplerand() & mask;
     benchmark(buf, i, c_ind_value, &mut rng);
   }
-  start_stop.v_stops.fetch_sub(1);
-  while start_stop.v_stops.load() != 0 {}
+  start_stop.v_stops.fetch_sub(1, Relaxed);
+  while start_stop.v_stops.load(Relaxed) != 0 {}
   if marshall
   {
-    while start_stop.c_stops.load() != 0 {}
+    while start_stop.c_stops.load(Relaxed) != 0 {}
     stop_print_me(pa);
-    start_stop.stopsby.store(false);
+    start_stop.stopsby.store(false, Relaxed);
   }
   else
   {
-    while start_stop.stopsby.load() {}
+    while start_stop.stopsby.load(Relaxed) {}
   }
 }
 
@@ -237,11 +237,11 @@ fn c_thread_setup_run(core : core_affinity::CoreId, args : &Args, start_stop : &
   {
     buff[i] ^= rng.simplerand();
   }
-  start_stop.c_start.fetch_sub(1);
-  while start_stop.startby.load() {}
+  start_stop.c_start.fetch_sub(1, Relaxed);
+  while start_stop.startby.load(Relaxed) {}
   let mut i : usize = 0;
   let mut mask : usize;
-  while start_stop.v_stops.load() != 0
+  while start_stop.v_stops.load(Relaxed) != 0
   {
     mask = rng.simplerand();
     for _ in 0.. 1024/mem::size_of::<usize>()
@@ -250,8 +250,8 @@ fn c_thread_setup_run(core : core_affinity::CoreId, args : &Args, start_stop : &
       i = (i + 1) % buff_len;
     }
   }
-  start_stop.c_stops.fetch_sub(1);
-  while start_stop.stopsby.load() {}
+  start_stop.c_stops.fetch_sub(1, Relaxed);
+  while start_stop.stopsby.load(Relaxed) {}
 }
 
 fn v_thread_setup_run(core : core_affinity::CoreId, layout : Layout, args : &Args, ind_value : usize,
